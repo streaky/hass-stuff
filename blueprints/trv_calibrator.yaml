@@ -1,0 +1,194 @@
+
+blueprint:
+  name: TRV Calibrator
+  description: Calibrate your TRV using an external sensor
+  domain: automation
+# Derived from https://github.com/rotilho/home-assistant-blueprints/blob/main/trv_calibrator.yaml (MIT License)
+# with extended timing controls and retry logic.
+  input:
+    trv:
+      name: Smart TRV
+      selector:
+        entity:
+          domain: climate
+    temperature_sensor:
+      name: Temperature Sensor
+      description: Sensor used to calibrate your TRV
+      selector:
+        entity:
+          domain: sensor
+          device_class: temperature
+    trv_calibration_number:
+      name: TRV Calibration Entity
+      description: If you can't find it it's possible that your TRV don't support calibration. Consider using the Better Thermostat custom integration instead.
+      selector:
+        entity:
+          domain: number
+          device_class: temperature
+    delay_in_minutes:
+      name: Delay in minutes
+      description: Your thermostat will take some time to update the current temperature after calibration. The delay should be higher than this time.
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 60
+          step: 1
+    min_calibration_interval_minutes:
+      name: Minimum minutes between calibrations
+      description: Minimum time that must elapse after the last calibration before a new one can occur.
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 240
+          step: 1
+    update_sync_window_seconds:
+      name: Update sync window (seconds)
+      description: Maximum allowed age difference between TRV and sensor updates, and maximum age of those updates relative to now.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 300
+          step: 5
+    sync_timeout_minutes:
+      name: Sync wait timeout (minutes)
+      description: Maximum time to wait for the TRV and sensor updates to align before aborting calibration.
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 240
+          step: 1
+
+mode: restart
+
+variables:
+  trv: !input trv
+  trv_calibration_number: !input trv_calibration_number
+  temperature_sensor: !input temperature_sensor
+  min_calibration_interval_minutes: !input min_calibration_interval_minutes
+  update_sync_window_seconds: !input update_sync_window_seconds
+  sync_timeout_minutes: !input sync_timeout_minutes
+
+trigger:
+  - platform: state
+    entity_id: !input trv
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 0
+  - platform: state
+    entity_id: !input trv_calibration_number
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 0
+  - platform: state
+    entity_id: !input temperature_sensor
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 0
+
+condition:
+  - condition: template
+    value_template: '{{ state_attr(trv, "current_temperature") != None }}'
+  - condition: template
+    value_template: '{{ states(trv_calibration_number) != "unavailable" and states(trv_calibration_number) != "unknown" }}'
+  - condition: template
+    value_template: '{{ states(temperature_sensor) != "unavailable" and states(temperature_sensor) != "unknown" }}'
+
+action:
+  - delay:
+      hours: 0
+      minutes: !input delay_in_minutes
+      seconds: 0
+      milliseconds: 0
+  - wait_template: >-
+      {% set now_ts = as_timestamp(now()) %}
+      {% set min_interval = (min_calibration_interval_minutes | int) * 60 %}
+      {% set calibration_state = states[trv_calibration_number] %}
+      {% set last_calibration_ts = as_timestamp(calibration_state.last_updated) if calibration_state is not none else none %}
+      {{ last_calibration_ts is none or (now_ts - last_calibration_ts) >= min_interval }}
+  - variables:
+      sync_deadline_ts: >-
+        {% set now_ts = as_timestamp(now()) %}
+        {% set timeout_seconds = (sync_timeout_minutes | int(0)) * 60 %}
+        {% set requested_deadline = (now_ts + timeout_seconds) if timeout_seconds > 0 else none %}
+        {% set hard_cap_deadline = now_ts + 3600 %}
+        {% if requested_deadline is not none and requested_deadline < hard_cap_deadline %}
+          {{ requested_deadline }}
+        {% else %}
+          {{ hard_cap_deadline }}
+        {% endif %}
+  - repeat:
+      while:
+        - condition: template
+          value_template: >-
+            {% set now_ts = as_timestamp(now()) %}
+            {% set window = update_sync_window_seconds | int %}
+            {% set trv_state = states[trv] %}
+            {% set sensor_state = states[temperature_sensor] %}
+            {% set trv_ts = as_timestamp(trv_state.last_updated) if trv_state is not none else none %}
+            {% set sensor_ts = as_timestamp(sensor_state.last_updated) if sensor_state is not none else none %}
+            {% set aligned = trv_ts is not none
+               and sensor_ts is not none
+               and (now_ts - trv_ts) <= window
+               and (now_ts - sensor_ts) <= window
+               and ((trv_ts - sensor_ts) | abs) <= window %}
+            {{ not aligned }}
+      sequence:
+        - choose:
+            - conditions:
+                - condition: template
+                  value_template: >-
+                    {{ sync_deadline_ts is not none and as_timestamp(now()) >= sync_deadline_ts }}
+              sequence:
+                - stop: 'Calibration skipped: sync window deadline reached before TRV and sensor updates aligned.'
+        - wait_template: >-
+            {% set now_ts = as_timestamp(now()) %}
+            {% set window = update_sync_window_seconds | int %}
+            {% set trv_state = states[trv] %}
+            {% set sensor_state = states[temperature_sensor] %}
+            {% set trv_ts = as_timestamp(trv_state.last_updated) if trv_state is not none else none %}
+            {% set sensor_ts = as_timestamp(sensor_state.last_updated) if sensor_state is not none else none %}
+            {{ trv_ts is not none
+               and sensor_ts is not none
+               and (now_ts - trv_ts) <= window
+               and (now_ts - sensor_ts) <= window
+               and ((trv_ts - sensor_ts) | abs) <= window }}
+          timeout:
+            seconds: '{{ update_sync_window_seconds }}'
+          continue_on_timeout: true
+  - service: number.set_value
+    target:
+      entity_id: !input trv_calibration_number
+    data:
+      value: >- 
+            {% set room_temperature = states(temperature_sensor) | float %}
+            {% set trv_temperature = state_attr(trv, "current_temperature") | float(0) %}
+
+            {% set trv_calibration = states(trv_calibration_number) | float %}
+            {% set trv_calibration_min = state_attr(trv_calibration_number, "min") | float(-5) %}
+            {% set trv_calibration_max = state_attr(trv_calibration_number, "max") | float(5) %}
+            {% set trv_calibration_step = state_attr(trv_calibration_number, "step") | float(1) %}
+
+            {% set step = trv_calibration_step | string %}
+            
+            {% if step.split(".") | length > 1 -%}
+              {% set trv_calibration_step_decimals = step.split(".")[1] | length %}
+            {%- else -%}
+              {% set trv_calibration_step_decimals = 0 %}
+            {%- endif %}
+
+            
+            {% set new_trv_calibration = room_temperature - trv_temperature + trv_calibration %}
+            {% set new_trv_calibration_bounded = [ [ (new_trv_calibration - new_trv_calibration % trv_calibration_step) | round(trv_calibration_step_decimals), trv_calibration_min ] | max, trv_calibration_max ] | min %}
+
+            {% if new_trv_calibration_bounded < trv_calibration - trv_calibration_step or trv_calibration + trv_calibration_step < new_trv_calibration_bounded -%}
+              {{ new_trv_calibration_bounded }}
+            {%- else -%}
+              {{ states(trv_calibration_number) }}
+            {%- endif %}
