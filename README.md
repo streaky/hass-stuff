@@ -8,7 +8,7 @@ The `blueprints/trv_calibrator.yaml` blueprint keeps a smart TRV calibrated agai
 
 ### Install
 
-[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fstreaky%2Fhass-stuff%2Frefs%2Fheads%2Fmain%2Fblueprints%2Ftrv_calibrator.yaml)
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2Fstreaky%2Fhass-stuff%2Frefs%2Fheads%2Fmain%2Fblueprints%2Ftrv_calibrator.yaml)
 
 ### Inputs
 
